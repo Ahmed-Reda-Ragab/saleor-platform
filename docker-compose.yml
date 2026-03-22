@@ -1,100 +1,114 @@
+version: "3.9"
+
 services:
   api:
-    image: ghcr.io/saleor/saleor:3.22
+    image: ghcr.io/saleor/saleor:3.22.0
+    container_name: saleor-api
     ports:
-      - 8000:8000
+      - "8000:8000"
     restart: unless-stopped
     networks:
       - saleor-backend-tier
-    stdin_open: true
-    tty: true
     depends_on:
-      - db
-      - cache
-      - jaeger
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
     volumes:
-      # shared volume between worker and api for media
       - saleor-media:/app/media
     env_file:
       - common.env
       - backend.env
     environment:
+      - DATABASE_URL=postgres://saleor:saleor@db:5432/saleor
+      - REDIS_URL=redis://cache:6379/0
       - DASHBOARD_URL=http://localhost:9000/
       - ALLOWED_HOSTS=localhost,127.0.0.1,api
+    stdin_open: true
+    tty: true
 
   dashboard:
-    image: ghcr.io/saleor/saleor-dashboard:latest
+    image: ghcr.io/saleor/saleor-dashboard:3.22.0
+    container_name: saleor-dashboard
     ports:
-      - 9000:80
+      - "9000:80"
     restart: unless-stopped
 
   db:
-    image: library/postgres:15-alpine
-    ports:
-      - 5432:5432
+    image: postgres:15.6-alpine
+    container_name: saleor-db
     restart: unless-stopped
     networks:
       - saleor-backend-tier
     volumes:
       - saleor-db:/var/lib/postgresql/data
-      - ./replica_user.sql:/docker-entrypoint-initdb.d/replica_user.sql:ro,z
     environment:
+      - POSTGRES_DB=saleor
       - POSTGRES_USER=saleor
       - POSTGRES_PASSWORD=saleor
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saleor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   cache:
-    image: valkey/valkey:8.1-alpine
-    ports:
-      - 6379:6379
+    image: valkey/valkey:8.0.1-alpine
+    container_name: saleor-cache
     restart: unless-stopped
     networks:
       - saleor-backend-tier
     volumes:
       - saleor-cache:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   worker:
-    image: ghcr.io/saleor/saleor:3.22
-    command: celery -A saleor --app=saleor.celeryconf:app worker --loglevel=info -B
+    image: ghcr.io/saleor/saleor:3.22.0
+    container_name: saleor-worker
+    command: celery -A saleor.celeryconf:app worker --loglevel=info
     restart: unless-stopped
     networks:
       - saleor-backend-tier
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
     env_file:
       - common.env
       - backend.env
-    depends_on:
-      - cache
-      - mailpit
+    environment:
+      - DATABASE_URL=postgres://saleor:saleor@db:5432/saleor
+      - REDIS_URL=redis://cache:6379/0
     volumes:
-      # shared volume between worker and api for media
       - saleor-media:/app/media
 
   jaeger:
-    image: jaegertracing/jaeger
+    image: jaegertracing/all-in-one:1.55
+    container_name: jaeger
+    restart: unless-stopped
+    networks:
+      - saleor-backend-tier
     ports:
       - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
-    restart: unless-stopped
-    networks:
-      - saleor-backend-tier
-    volumes:
-      - type: tmpfs
-        target: /tmp
 
   mailpit:
-    image: axllent/mailpit
-    ports:
-      - 1025:1025 # smtp server
-      - 8025:8025 # web ui. Visit http://localhost:8025/ to check emails
+    image: axllent/mailpit:v1.20
+    container_name: mailpit
     restart: unless-stopped
     networks:
       - saleor-backend-tier
+    ports:
+      - "1025:1025"
+      - "8025:8025"
 
 volumes:
   saleor-db:
-    driver: local
   saleor-cache:
-    driver: local
   saleor-media:
 
 networks:
